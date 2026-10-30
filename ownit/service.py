@@ -31,7 +31,7 @@ class Orchestrator:
         repo, pr = ('ownit-demo/document-tags', None) if request.demo else parse_url(request.url)
         baseline = self.store.baseline(repo, request.demo)
         if request.demo:
-            data = demo.snapshot(request.demo_version, baseline)
+            data = demo.snapshot('modified', 'demo-v1') if request.demo_pr else demo.snapshot(request.demo_version, baseline)
         else:
             github = GitHub(self.token)
             try:
@@ -42,6 +42,7 @@ class Orchestrator:
         result = demo.analysis(data) if request.demo else analysis.analyze(self.llm, data)
         self.verify_evidence([e for c in result.components + result.algorithms + result.learning_objectives for e in c.evidence] + [e for risk in result.risks for e in risk.evidence], data['files'])
         review = Review(id=uid(), repo=repo, sha=data['sha'], base_sha=data['base_sha'], demo=request.demo, created_at=datetime.now(timezone.utc).isoformat(), status='analyzed', analysis=result, files=data['files'], diff=data['diff'], questions=[], answers=[], conversations=[])
+        review.coverage_complete = data.get('coverage_complete', True)
         self.store.save(review)
         return review
 
@@ -58,6 +59,14 @@ class Orchestrator:
             return r
         self.mutable(r)
         qs = [demo.question(c, uid()) for c in r.analysis.learning_objectives] if r.demo else testing.questions(self.llm, self.context(r))
+        if r.demo and r.analysis.review_type == 'change':
+            prompts = {
+                'Authorization boundary': 'This PR replaces a signed-in check with ownership and public-visibility checks in can_read. How does that change a non-owner reading a private document, and what regression test would verify it?',
+                'Stable tag deduplication': 'This PR adds a set alongside the output list in unique_tags. Why keep both, how does complexity change, and what assumption does the set introduce?',
+                'Visibility before aggregation': 'How do the can_read changes affect list_tags downstream? Trace filtering before tag aggregation and explain how you would check that private tags cannot leak.',
+            }
+            for q in qs:
+                q.prompt = prompts[q.concept]
         if len(r.analysis.learning_objectives) >= 3 and len(qs) < 3:
             raise HTTPException(502, 'AI returned too few questions for the identified learning objectives. Retry.')
         if len({q.prompt for q in qs}) != len(qs) or len({q.concept for q in qs}) != len(qs):
@@ -123,12 +132,16 @@ class Orchestrator:
             raise HTTPException(409, 'Answer the original question before retesting.')
         if not any(c['concept'] == original.concept for c in r.conversations):
             raise HTTPException(409, 'Use Teaching Mode for this concept before requesting a retest.')
-        existing = next((q for q in r.questions if q.kind == 'retest' and q.parent_id == root_id), None)
-        if existing:
+        retests = [q for q in r.questions if q.kind == 'retest' and q.parent_id == root_id]
+        existing = retests[-1] if retests else None
+        if existing and not any(a['question_id'] == existing.id for a in r.answers):
             return r
         if r.demo:
             concept = next(c for c in r.analysis.learning_objectives if c.name == original.concept)
             q = demo.question(concept, uid(), root_id, 'retest')
+            if retests:
+                scenarios = {'Authorization boundary':'Compare an anonymous caller and an authenticated non-owner requesting a public document.', 'Stable tag deduplication':'Consider empty documents, all unique tags, and a non-hashable tag.', 'Visibility before aggregation':'Consider a mixture of public documents and another user\'s private documents sharing the same tag.'}
+                q.prompt = f"Retest {len(retests)+1}: {scenarios[q.concept]} {q.prompt}"
         else:
             qs = testing.questions(self.llm, {**self.context(r), 'retest_concept': original.concept, 'previous_questions': [q.model_dump() for q in r.questions], 'answers': r.answers, 'teaching': r.conversations[-6:]})
             if len(qs) != 1:
@@ -145,12 +158,21 @@ class Orchestrator:
 
     def complete(self, id):
         r = self.get(id)
-        answered = {a['question_id'] for a in r.answers}
-        if not r.questions or any(q.id not in answered for q in r.questions):
-            raise HTTPException(409, 'Answer all generated questions before completing the review.')
+        self.assert_passed(r)
         r.status = 'completed'
         self.store.save(r)
         return r
+
+    def assert_passed(self, r):
+        answered = {a['question_id'] for a in r.answers}
+        if not r.questions or any(q.id not in answered for q in r.questions):
+            raise HTTPException(409, 'Answer all generated questions before completing the review.')
+        latest = {}
+        for answer in r.answers:
+            latest[self.question(r, answer['question_id']).concept] = answer['evaluation']['verdict']
+        required = {q.concept for q in r.questions if q.kind == 'original'}
+        if not required or any(latest.get(concept) != 'correct' for concept in required):
+            raise HTTPException(409, 'Quiz not passed. Demonstrate every assessed concept with a correct answer or retest; partial, incorrect and uncertain evaluations keep the checkpoint blocked.')
 
     def report(self, id):
         r = self.get(id)

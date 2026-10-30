@@ -10,13 +10,20 @@ with httpx.Client(base_url=base, timeout=30) as client:
         return r.json()
 
     assert call('/health')['status'] == 'ok'
-    r = call('/reviews', {'demo': True})
-    assert r['analysis']['review_type'] == 'initial'
+    r = call('/reviews', {'demo': True, 'demo_pr': True})
+    assert r['analysis']['review_type'] == 'change'
+    assert r['base_sha'] == 'demo-v1' and r['diff']
     path = f"/reviews/{r['id']}"
     r = call(path + '/questions', {})
     q = r['questions'][0]
     r = call(path + '/answers', {'question_id': q['id'], 'answer': 'I do not know.'})
     assert r['answers'][-1]['evaluation']['verdict'] == 'incorrect'
+    good_answer = 'Deny a non-owner private access. A set supports linear lookup; a list preserves order. Filter visibility through authorization before aggregating tags.'
+    for question in r['questions'][1:]:
+        call(path + '/answers', {'question_id': question['id'], 'answer': good_answer})
+    # Every original question has now been attempted. The incorrect concept
+    # must still prevent completion, independently of question progress.
+    assert client.post(path + '/complete').status_code == 409
     r = call(path + '/teach', {'question_id': q['id'], 'concept': q['concept'], 'message': 'Help me trace access for another owner.'})
     assert r['status'] == 'teaching'
     r = call(path + '/retest', {'question_id': q['id']})
@@ -24,13 +31,14 @@ with httpx.Client(base_url=base, timeout=30) as client:
     for question in r['questions']:
         if any(a['question_id'] == question['id'] for a in r['answers']):
             continue
-        r = call(path + '/answers', {'question_id': question['id'], 'answer': 'Deny a non-owner private access. A set supports linear lookup; a list preserves order. Filter visibility through authorization before aggregating tags.'})
+        r = call(path + '/answers', {'question_id': question['id'], 'answer': good_answer})
     report = call(path + '/report')
     assert report['retest_improvements'][0]['after'] == 'correct'
     assert report['teaching_exchanges'] == 1
-    call(path + '/complete', {})
-    change = call('/reviews', {'demo': True, 'demo_version': 'modified'})
+    assert not report['knowledge_gaps']
+    assert call(path + '/complete', {})['status'] == 'completed'
+    change = call('/reviews', {'demo': True, 'demo_pr': True})
     assert change['analysis']['review_type'] == 'change'
     independent = call(f"/reviews/{change['id']}/teach", {'concept': 'Stable tag deduplication', 'message': 'Explain the set optimization.'})
     assert not independent['answers']
-    print(f"PASS: initial review, change review, independent teaching, test/teach/retest, report and completion. Review {r['id']}")
+    print(f"PASS: demo PR diff, incorrect quiz blocked, teaching, fresh retest, all concepts passed, report, fresh checkpoint, independent tutoring. Review {r['id']}")

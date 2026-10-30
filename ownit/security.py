@@ -3,7 +3,7 @@ import re
 
 
 def redact(text: str) -> str:
-    for key in ("DARTMOUTH_API_KEY", "GITHUB_TOKEN"):
+    for key in ("DARTMOUTH_API_KEY", "GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET", "GITHUB_CLIENT_SECRET"):
         secret = os.getenv(key)
         if secret:
             text = text.replace(secret, "[REDACTED]")

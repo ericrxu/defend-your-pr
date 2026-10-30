@@ -167,7 +167,7 @@ def test_mocked_live_agents(tmp_path, monkeypatch):
     monkeypatch.setattr(GitHub, 'fetch', lambda self, *args: demo.snapshot('initial', None))
     model = FakeLLM()
     with TestClient(create_app(str(tmp_path/'live.db'), model)) as c:
-        r = c.post('/reviews', json={'url': 'https://github.com/acme/code'}).json()
+        r = c.app.state.service.create(CreateReview(url='https://github.com/acme/code')).model_dump()
         assert not r['demo']
         id = r['id']
         q = c.post(f'/reviews/{id}/questions').json()['questions'][0]

@@ -9,6 +9,9 @@ export type Review = {
  files: Record<string, string>; diff: string; questions: Question[];
  answers: { id: string; question_id: string; answer: string; evaluation: Evaluation; challenge: boolean }[];
  conversations: { id: string; concept: string; question_id?: string; message: string; response: Teaching }[];
+ gate_id?: string;
 };
 export type Report = { status: string; questions_answered: number; outcomes: Record<string, number>; concepts_understood: string[]; knowledge_gaps: string[]; teaching_exchanges: number; retest_improvements: {concept: string; before: string; after: string}[]; next_steps: string[]; evidence: Evidence[] };
 export type History = Pick<Review, 'id' | 'repo' | 'sha' | 'status' | 'demo' | 'created_at'>;
+export type Auth = {user: {id: number; login: string} | null; configured: boolean};
+export type Gate = {id: string; repo: string; number: number; sha: string; base_sha: string; author: string; author_id: number; state: 'queued' | 'analyzing' | 'quiz_required' | 'passed' | 'stale' | 'error'; review_id?: string; error?: string};

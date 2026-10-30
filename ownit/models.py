@@ -77,6 +77,7 @@ class Teaching(BaseModel):
 class CreateReview(BaseModel):
     url: str = Field(default="", max_length=500)
     demo: bool = False
+    demo_pr: bool = False
     demo_version: Literal["initial", "modified"] = "initial"
     commit: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{7,40}$")
 
@@ -111,6 +112,8 @@ class Review(BaseModel):
     questions: list[Question]
     answers: list[dict]
     conversations: list[dict]
+    gate_id: str | None = None
+    coverage_complete: bool = True
 
 
 class Report(BaseModel):
@@ -124,3 +127,20 @@ class Report(BaseModel):
     retest_improvements: list[dict]
     next_steps: list[str]
     evidence: list[Evidence]
+
+
+class PullRequestInput(BaseModel):
+    url: str = Field(max_length=500)
+
+
+class PullRequestGate(BaseModel):
+    id: str
+    repo: str
+    number: int
+    sha: str
+    base_sha: str
+    author: str
+    author_id: int
+    state: Literal['queued', 'analyzing', 'quiz_required', 'passed', 'stale', 'error']
+    review_id: str | None = None
+    error: str | None = None

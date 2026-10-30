@@ -32,6 +32,13 @@ class GitHub:
     def close(self):
         self.client.close()
 
+    def set_status(self, repo, sha, state, target_url, description):
+        try:
+            response = self.client.post(f'/repos/{repo}/statuses/{sha}', json={'state':state, 'context':'OwnIt / understanding', 'target_url':target_url, 'description':description[:140]})
+            response.raise_for_status()
+        except httpx.HTTPError:
+            raise HTTPException(502, 'Could not update the OwnIt GitHub check. Check the server token has Commit statuses write permission; merge approval was not recorded.') from None
+
     def get(self, path):
         try:
             r = self.client.get(path)
@@ -60,10 +67,13 @@ class GitHub:
         if tree.get("truncated"):
             warnings.append("GitHub truncated the repository tree; some components may be missing.")
         changes, diff = [], ""
+        coverage_complete = True
         if base:
             comparison = self.get(f"/repos/{repo}/compare/{base}...{sha}")
             changes = comparison.get("files", [])
-            diff = redact("\n".join(f"{f['status']} {f['filename']}\n{f.get('patch', '[Patch unavailable or binary]')}" for f in changes if safe_path(f['filename'])))[:35000]
+            full_diff = redact("\n".join(f"{f['status']} {f['filename']}\n{f.get('patch', '[Patch unavailable or binary]')}" for f in changes if safe_path(f['filename'])))
+            diff = full_diff[:35000]
+            coverage_complete = len(full_diff) <= 35000 and len(changes) < 300
             if comparison.get("total_commits", 0) > 250 or len(changes) >= 300:
                 warnings.append("Comparison may be truncated by GitHub limits.")
         changed = {f["filename"] for f in changes}
@@ -81,4 +91,8 @@ class GitHub:
             total += len(content)
         if not files:
             raise HTTPException(422, "No supported text files within the context limits.")
-        return {"sha": sha, "base_sha": base, "files": files, "diff": diff, "changed_files": sorted(changed), "limitations": warnings}
+        missing = [f['filename'] for f in changes if f['filename'].endswith(EXTENSIONS) and ((f['status'] != 'removed' and f['filename'] not in files) or not f.get('patch'))]
+        if missing:
+            coverage_complete = False
+            warnings.append('Changed text could not be fully included: ' + ', '.join(missing))
+        return {"sha": sha, "base_sha": base, "files": files, "diff": diff, "changed_files": sorted(changed), "limitations": warnings, "coverage_complete":coverage_complete}
