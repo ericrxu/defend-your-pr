@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# OwnIt local runtime and generated assets
+.pytest-tmp/
+tools/
+data/
+.env
+.env.*
+!.env.example
+frontend/.next/
+frontend/node_modules/
+*.tsbuildinfo
+*.egg-info/
