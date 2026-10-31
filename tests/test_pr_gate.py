@@ -301,7 +301,7 @@ def test_demo_pr_contains_diff_and_cannot_bypass_passing(gate_env):
     assert r['analysis']['review_type']=='change'
     assert r['diff'] and set(r['analysis']['changed_files'])=={'auth.py','search.py'}
     r=client.post('/reviews/'+r['id']+'/questions').json()
-    assert 'This PR' in r['questions'][0]['prompt']
+    assert r['questions'][0]['prompt'] == 'What role does access control play in the document-tag service?'
     answer_all(client,r,'I do not know.')
     assert client.post('/reviews/'+r['id']+'/complete').status_code==409
     assert not statuses

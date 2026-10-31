@@ -1,4 +1,4 @@
-"""Limit PR assessments to changed head lines, retaining nearby context only."""
+"""Describe PR changes while retaining the program context for structural quizzes."""
 import re
 
 HUNK = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@')
@@ -52,21 +52,11 @@ def touches(evidence, lines):
 
 
 def assessment_context(review, full_context):
-    if review.analysis.review_type != 'change':
-        return full_context, None
-    lines = changed_lines(review.diff, review.files)
-    facts = review.analysis.model_dump()
-    for key in ('components', 'algorithms', 'learning_objectives', 'risks'):
-        original = getattr(review.analysis, key)
-        facts[key] = [item.model_dump() for item in original if any(touches(ev, lines) for ev in item.evidence)]
-    facts['summary'] = 'Assessment covers only the additions and modifications in the supplied PR diff.'
-    facts['data_flow'], facts['apis_and_dependencies'] = [], []
-    snippets = {}
-    for path, changed in lines.items():
-        source = review.files[path].splitlines()
-        visible = {n for line in changed for n in range(max(1,line-2), min(len(source),line+2)+1)}
-        snippets[path] = '\n'.join(f'{n}: {source[n-1]}' for n in sorted(visible))
-    head_only_diff = '\n'.join(path + '\n' + '\n'.join(f'+{n}: {review.files[path].splitlines()[n-1]}' for n in sorted(changed)) for path,changed in lines.items())
-    return {'analysis':facts, 'files':snippets, 'diff':head_only_diff,
-            'assessment_scope':{'policy':'new_changes_only', 'changed_head_lines':{p:sorted(ns) for p,ns in lines.items()},
-                'context_only':'Nearby unchanged lines and minus lines are context, never independent quiz topics. Snippet prefixes are original head line numbers.'}}, lines
+    lines = changed_lines(review.diff, review.files) if review.analysis.review_type == 'change' else {}
+    return {**full_context, 'assessment_scope':{
+        'policy':'program_structure',
+        'topics':['overall purpose', 'main parts and responsibilities',
+                  'cooperation between parts', 'input-to-output workflow'],
+        'changed_head_lines':{path:sorted(numbers) for path,numbers in lines.items()},
+        'guidance':'Use all supplied files and the architecture analysis. The diff identifies this revision but does not limit quiz topics or evidence to changed lines. Ask about overall understanding, not implementation details.',
+    }}, None

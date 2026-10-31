@@ -39,58 +39,79 @@ def service(tmp_path):
     return Orchestrator(Store(str(tmp_path/'scope.db')),LLM())
 
 
-def test_unchanged_files_and_objectives_are_not_given_to_tester(service):
+def test_structural_quiz_retains_unchanged_components_and_full_workflow(service):
     review = service.create(CreateReview(demo=True,demo_pr=True))
     context, scope = assessment_context(review,service.context(review))
-    assert 'service.py' not in context['files']
-    assert {item['name'] for item in context['analysis']['learning_objectives']} == {'Authorization boundary','Stable tag deduplication'}
-    assert 'Visibility before aggregation' in {item.name for item in review.analysis.learning_objectives}
-    assert scope['auth.py']
-    assert 'return user is not None' in review.diff
-    assert 'return user is not None' not in context['diff']
+    assert context['files'] == review.files
+    assert context['analysis'] == review.analysis.model_dump()
+    assert context['analysis']['data_flow']
+    assert scope is None  # Evidence can cover any supplied part of the program.
+    assert context['assessment_scope']['policy'] == 'program_structure'
+    assert context['assessment_scope']['changed_head_lines']['auth.py']
+    assert context['diff'] == review.diff
 
 
-def test_demo_pr_only_asks_about_changed_code(service):
+def test_demo_pr_includes_the_unchanged_orchestration_part(service):
     r = service.create(CreateReview(demo=True,demo_pr=True))
     r = service.generate(r.id)
-    assert len(r.questions)==2
-    assert {q.concept for q in r.questions} == {'Authorization boundary','Stable tag deduplication'}
-    assert all('service.py' not in [e.path for e in q.evidence] for q in r.questions)
+    assert len(r.questions)==3
+    assert {q.concept for q in r.questions} == {'Authorization boundary','Stable tag deduplication','Visibility before aggregation'}
+    assert any(e.path == 'service.py' for q in r.questions for e in q.evidence)
+    assert all('complexity' not in q.prompt and 'seen set' not in q.prompt for q in r.questions)
 
 
 @pytest.mark.parametrize('path,start,end', [('service.py',1,7),('auth.py',1,1),('search.py',9,9)])
-def test_model_question_about_original_code_is_rejected(service,path,start,end):
+def test_model_structural_question_can_cite_existing_code(service,path,start,end):
     r=service.create(CreateReview(demo=True,demo_pr=True))
     q=demo.question(r.analysis.learning_objectives[0],'placeholder')
     q.evidence=[Evidence(path=path,start=start,end=end)]
-    class OutOfScope:
+    q.prompt = 'What responsibility does this part have in the overall program?'
+    class StructuralModel:
         def generate(self,*args):
             return QuestionSet(questions=[q])
-    service.llm=OutOfScope()
+    service.llm=StructuralModel()
     r.demo=False
     service.store.save(r)
-    with pytest.raises(HTTPException) as raised:
-        service.generate(r.id)
-    assert raised.value.status_code==502
-    assert service.get(r.id).questions==[]
+    result = service.generate(r.id)
+    assert len(result.questions) == 1
+    assert result.questions[0].evidence == q.evidence
 
 
-def test_retest_must_stay_on_changed_lines(service):
+def test_retest_can_use_unchanged_structure_with_valid_evidence(service):
     r=service.generate(service.create(CreateReview(demo=True,demo_pr=True)).id)
     q=r.questions[0]
     service.answer(r.id,AnswerRequest(question_id=q.id,answer='I do not know.'))
     service.teach(r.id,TeachRequest(question_id=q.id,concept=q.concept,message='Help me understand the new check.'))
-    unrelated=demo.question(r.analysis.learning_objectives[-1],'placeholder',kind='retest')
-    class OutOfScope:
+    structural=demo.question(r.analysis.learning_objectives[0],'placeholder',kind='retest')
+    structural.evidence=[Evidence(path='service.py',start=1,end=7)]
+    class StructuralModel:
         def generate(self,*args):
-            return QuestionSet(questions=[unrelated])
-    service.llm=OutOfScope()
+            return QuestionSet(questions=[structural])
+    service.llm=StructuralModel()
     r=service.get(r.id)
     r.demo=False
     service.store.save(r)
-    with pytest.raises(HTTPException):
-        service.retest(r.id,RetestRequest(question_id=q.id))
-    assert len(service.get(r.id).questions)==2
+    result = service.retest(r.id,RetestRequest(question_id=q.id))
+    assert result.questions[-1].kind == 'retest'
+    assert result.questions[-1].concept == q.concept
+    assert result.questions[-1].evidence[0].path == 'service.py'
+
+
+@pytest.mark.parametrize('evidence', [Evidence(path='missing.py',start=1,end=1), Evidence(path='service.py',start=1,end=999)])
+def test_structural_questions_still_require_real_source_references(service,evidence):
+    r = service.create(CreateReview(demo=True,demo_pr=True))
+    r.demo = False
+    service.store.save(r)
+    q = demo.question(r.analysis.learning_objectives[0],'placeholder')
+    q.evidence = [evidence]
+    class InvalidEvidence:
+        def generate(self,*args):
+            return QuestionSet(questions=[q])
+    service.llm = InvalidEvidence()
+    with pytest.raises(HTTPException) as error:
+        service.generate(r.id)
+    assert error.value.status_code == 502
+    assert service.get(r.id).questions == []
 
 
 @pytest.mark.parametrize('concept,answer', [
@@ -129,7 +150,8 @@ def test_overloaded_questions_are_simplified_before_use(service):
     result=testing.questions(model,context)
     assert result[0].prompt==short.prompt
     assert len(model.requests)==2
-    assert model.requests[0]['question_budget']==2
+    assert model.requests[0]['question_budget']==3
+    assert model.requests[0]['assessment_style']=='program_structure'
 
 
 def test_persistently_overloaded_questions_are_not_saved(service):

@@ -6,7 +6,7 @@ from .agents import analysis, testing, teaching
 from .github import GitHub, parse_url
 from .models import Review, Question, Report
 from .security import redact
-from .changes import assessment_context, touches
+from .changes import assessment_context
 
 
 def uid():
@@ -51,15 +51,10 @@ class Orchestrator:
         return {'analysis': r.analysis.model_dump(), 'files': r.files, 'diff': r.diff}
 
     def testing_context(self, r):
-        context, scope = assessment_context(r, self.context(r))
-        if scope is not None and not scope:
-            raise HTTPException(422, 'No assessable new or modified head lines were found in this diff. Questions cannot be generated about unrelated original code.')
-        return context, scope
+        return assessment_context(r, self.context(r))
 
-    def verify_question_scope(self, question, r, scope):
+    def verify_question_evidence(self, question, r):
         self.verify_evidence(question.evidence, r.files)
-        if scope is not None and (not question.evidence or not all(touches(ev, scope) for ev in question.evidence)):
-            raise HTTPException(502, 'A generated question referenced original or unchanged code instead of this PR\'s changes. Retry question generation.')
 
     def mutable(self, r):
         if r.status == 'completed':
@@ -70,23 +65,15 @@ class Orchestrator:
         if r.questions:
             return r
         self.mutable(r)
-        context, scope = self.testing_context(r)
-        objectives = [c for c in r.analysis.learning_objectives if scope is None or any(touches(ev, scope) for ev in c.evidence)]
+        context, _ = self.testing_context(r)
+        objectives = r.analysis.learning_objectives
         qs = [demo.question(c, uid()) for c in objectives] if r.demo else testing.questions(self.llm, context)
-        if r.demo and r.analysis.review_type == 'change':
-            prompts = {
-                'Authorization boundary': 'This PR adds ownership and public-visibility checks in can_read. In plain language, what access do these new checks allow?',
-                'Stable tag deduplication': 'This PR adds the seen set in unique_tags. How does that addition help collect tags?',
-                'Visibility before aggregation': 'What effect does this PR\'s new access check have on which tags a caller can receive?',
-            }
-            for q in qs:
-                q.prompt = prompts[q.concept]
-        if not qs or (scope is None and len(qs) < min(3, len(objectives))):
+        if not qs:
             raise HTTPException(502, 'AI returned too few questions for the identified learning objectives. Retry.')
         if len({q.prompt for q in qs}) != len(qs) or len({q.concept for q in qs}) != len(qs):
             raise HTTPException(502, 'AI returned duplicate assessment concepts. Retry.')
         for q in qs:
-            self.verify_question_scope(q, r, scope)
+            self.verify_question_evidence(q, r)
             q.id, q.parent_id, q.kind = uid(), None, 'original'
         r.questions, r.status = qs, 'testing'
         self.store.save(r)
@@ -139,9 +126,7 @@ class Orchestrator:
         r = self.get(id)
         self.mutable(r)
         original = self.question(r, request.question_id)
-        context, scope = self.testing_context(r)
-        if scope is not None and not any(touches(ev, scope) for ev in original.evidence):
-            raise HTTPException(409, 'This saved question concerns unchanged code. A fresh PR checkpoint will use the new changes-only question policy.')
+        context, _ = self.testing_context(r)
         root = original
         while root.parent_id:
             root = self.question(r, root.parent_id)
@@ -168,7 +153,7 @@ class Orchestrator:
             q.id, q.parent_id, q.kind, q.concept = uid(), root_id, 'retest', original.concept
         if q.prompt in {q.prompt for q in r.questions}:
             raise HTTPException(502, 'Retest repeated an existing question. Retry.')
-        self.verify_question_scope(q, r, scope)
+        self.verify_question_evidence(q, r)
         r.questions.append(q)
         r.status = 'testing'
         self.store.save(r)

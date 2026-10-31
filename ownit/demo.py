@@ -31,9 +31,9 @@ def analysis(data):
 
 
 PROMPTS = {
-    'Authorization boundary': ('Trace a signed-in non-owner reading a private document. What does can_read return, and what should a safe policy check?', 'Using the added authorization checks, can a signed-in user read a private document they do not own? Briefly explain.'),
-    'Stable tag deduplication': ('Explain the time and space cost of unique_tags. How would a set plus a list change performance and output order?', 'What does the new seen set do when the next tag has already been encountered?'),
-    'Visibility before aggregation': ('Trace list_tags from user and documents to output. Why must authorization happen before collecting tags?', 'How could private tags leak through list_tags, and which component must enforce visibility before aggregation?'),
+    'Authorization boundary': ('What role does access control play in the document-tag service?', 'How does deciding document access support the program\'s overall purpose?'),
+    'Stable tag deduplication': ('What is the tag-processing part responsible for in this program?', 'How does the tag-processing part contribute to the result returned to a user?'),
+    'Visibility before aggregation': ('How do the program\'s main parts work together to turn documents into a tag list?', 'Which main stages connect the user\'s document request to the final tag output?'),
 }
 
 
@@ -44,20 +44,20 @@ def question(concept, id, parent=None, kind='original'):
 def grade(q, answer):
     words = answer.lower()
     groups = {
-        'Authorization boundary': [('owner', 'ownership', 'owns', 'their own', 'belongs to'), ('private', 'public', 'shared'), ('deny', 'false', 'reject', 'leak', 'unsafe', 'only', 'blocked', 'cannot', "can't")],
-        'Stable tag deduplication': [('set', 'seen', 'duplicate'), ('order', 'list', 'skip', 'once', 'unique', 'already'), ('o(t)', 'linear', 'o(n)', 'quadratic', 'o(t²)', 'o(n^2)', 'o(t^2)', 'faster', 'quick', 'efficient')],
+        'Authorization boundary': [('owner', 'ownership', 'owns', 'their own', 'belongs to', 'permission', 'access', 'authorization'), ('private', 'public', 'shared', 'document'), ('deny', 'false', 'reject', 'leak', 'unsafe', 'only', 'blocked', 'cannot', "can't", 'protect', 'restrict')],
+        'Stable tag deduplication': [('set', 'seen', 'duplicate', 'tag'), ('order', 'list', 'skip', 'once', 'unique', 'already', 'output', 'result'), ('o(t)', 'linear', 'o(n)', 'quadratic', 'o(t²)', 'o(n^2)', 'o(t^2)', 'faster', 'quick', 'efficient', 'clean')],
         'Visibility before aggregation': [('filter', 'visible', 'visibility'), ('auth', 'permission', 'can_read'), ('tag', 'aggregate')],
     }[q.concept]
     count = sum(any(w in words for w in group) for group in groups)
     verdict = 'uncertain' if '?' in words and count == 0 else 'correct' if count >= 2 else 'partially_correct' if count else 'incorrect'
-    return Evaluation(verdict=verdict, feedback=f'Demo rule-based feedback: matched {count} of 3 reasoning signals; two signals are enough for the main idea. Compare your reasoning with the cited code; keyword matching can be wrong.', knowledge_gap=None if verdict == 'correct' else q.concept, followup='Briefly explain the main effect of this change using one concrete input.' if verdict == 'partially_correct' else None, evidence=q.evidence)
+    return Evaluation(verdict=verdict, feedback=f'Demo rule-based feedback: matched {count} of 3 reasoning signals; two signals are enough for the main idea. Compare your reasoning with the cited code; keyword matching can be wrong.', knowledge_gap=None if verdict == 'correct' else q.concept, followup='What responsibility does this part have in the overall document-to-tags workflow?' if verdict == 'partially_correct' else None, evidence=q.evidence)
 
 
 def teach(concept):
     examples = {
-        'Authorization boundary': ('Compare user id with owner_id and inspect public visibility. In the initial fixture, user is not None ignores both fields.', 'Try user={id: 2}, document={owner_id: 1, public: False}.', 'Which boolean conditions should allow this document, and what happens for an anonymous user?'),
-        'Stable tag deduplication': ('A list preserves order but membership scans the accumulated list. A set accelerates membership; keeping a separate output list preserves the order.', 'Walk through tags [a, b, a]. Count each membership lookup.', 'Why does returning only the set lose an important output property?'),
-        'Visibility before aggregation': ('service.list_tags calls can_read for each document before unique_tags sees it. A permissive authorization function leaks information even when aggregation is correct.', 'Follow one private document through both calls.', 'What assertion would a regression test make about the tags of a different owner?'),
+        'Authorization boundary': ('Access control is the part that decides which documents a caller may use. The service relies on that decision before collecting tags, so it protects private information.', 'Separate deciding access from organizing tags; they have different responsibilities.', 'What does the rest of the program rely on the access-control part to decide?'),
+        'Stable tag deduplication': ('The tag-processing part turns the allowed documents into a clean list of distinct tags. It organizes the result after access has been decided.', 'Think about the difference between selecting documents and preparing the final tag list.', 'What does tag processing contribute to the result the user receives?'),
+        'Visibility before aggregation': ('The program receives a user and documents, checks access, selects visible documents, then collects their tags into the final result.', 'Describe the input, the filtering stage, and the output stage in order.', 'How do the access-control and tag-processing parts cooperate?'),
     }
     explanation, hint, checkpoint = examples.get(concept.name, (concept.explanation, 'Trace one concrete input through the cited code.', 'What changes in the output for an edge case?'))
     return Teaching(explanation='[Prerecorded demo tutor] ' + explanation, hint=hint, checkpoint=checkpoint, evidence=concept.evidence)

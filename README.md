@@ -2,9 +2,9 @@
 
 **AI understands your code. But do you?**
 
-OwnIt (`defend-your-pr`) is a pull-request understanding checkpoint. Opening a PR or pushing another commit creates a pending GitHub check. The PR author must explain the actual changes, their consequences, and edge cases before the check can pass and the PR becomes eligible to merge.
+OwnIt (`defend-your-pr`) is a pull-request understanding checkpoint. Opening a PR or pushing another commit creates a pending GitHub check. The PR author explains the program's purpose, main parts, and overall workflow before the check can pass and the PR becomes eligible to merge.
 
-The main workflow is **PR → blocked merge check → diff-specific quiz → teach/retest → passed check for that commit**. Repository analysis supplies context to the quiz. See [GitHub checkpoint setup](docs/GITHUB_SETUP.md) to connect a repository and require the check; the local website alone cannot enforce a merge restriction.
+The main workflow is **PR → blocked merge check → program-structure quiz → teach/retest → passed check for that commit**. Repository analysis supplies context to the quiz. See [GitHub checkpoint setup](docs/GITHUB_SETUP.md) to connect a repository and require the check; the local website alone cannot enforce a merge restriction.
 
 ## Requirements and installation
 
@@ -143,7 +143,7 @@ The HTTP smoke test opens a demo PR, verifies that an attempted but incorrect qu
 | `ownit/github.py` | Public URL parsing, immutable snapshots and diffs |
 | `ownit/agents/analysis.py` | Architecture and change analysis agent |
 | `ownit/agents/testing.py` | Adaptive questions and evaluation agent |
-| `ownit/changes.py` | Diff line mapping, changes-only assessment context and grounding checks |
+| `ownit/changes.py` | Diff line mapping and full-program context for structural assessments |
 | `ownit/agents/teaching.py` | Socratic tutoring agent |
 | `ownit/llm.py` | Server-side Dartmouth Chat API adapter |
 | `ownit/service.py` | Orchestration, transitions, evidence validation and reporting |
@@ -183,7 +183,7 @@ The HTTP smoke test opens a demo PR, verifies that an attempted but incorrect qu
 - GitHub context is bounded: at most 25 supported text files, 24 KB per file and 90 KB total, prioritizing changed files; diffs are capped at 35 KB. Live checkpoints stop if supported changed source or its patches cannot fit in context, or the comparison is truncated. Surrounding repository context is sampled and limitations remain visible. This is advisory, not an exhaustive audit.
 - Repository code is never executed. Sensitive filenames are excluded; recognizable credential patterns and configured tokens are redacted. Prompts treat code and user text as untrusted data. Pattern matching cannot guarantee recognition of every secret format; review public source before submitting it.
 - Each Dartmouth AI request has a 120-second timeout. Provider failures return actionable errors and preserve previously saved state. Mutations are serialized in-process; multiple Uvicorn workers are outside MVP scope.
-- Small PRs normally get 2–4 concise questions, with fewer for tiny changes and up to 7 for distinct complex additions. Each question focuses on one central idea in NEW or modified code. Unchanged code is context, never an independent PR quiz topic. The tester receives changed-line snippets instead of full original files; generated questions and retests must cite changed head lines. Plain-language, brief answers pass when their central reasoning is right; specialist terminology, Big-O notation, exhaustive edge cases and optional rubric details are not required unless essential to the asked change. Material mistakes and uncertain judgments still block the checkpoint. After teaching, new retests can close the same concept's gap. An unanswered retest is reused instead of generating duplicates.
+- New assessments normally get 2–4 concise questions, with fewer for tiny programs. Questions cover the supplied program's overall purpose, main parts and responsibilities, how the parts cooperate, and the input-to-output workflow. The tester receives the full sampled source and architecture analysis; unchanged components are valid topics and evidence need not overlap the PR's changed lines. Exact identifiers, individual statements/constants, numeric precision and complexity details are not quiz goals. Plain-language descriptions and equivalent ways of grouping components are accepted. Material misunderstandings and uncertain judgments still block the checkpoint. After teaching, a structural retest can close the same concept's gap; an unanswered retest is reused instead of generating duplicates.
 - Completion now requires a latest correct evaluation for every originally assessed concept and attempts on all generated questions. Teaching alone cannot pass. Earlier incorrect attempts remain visible in reports after a successful retest. Completed sessions are immutable; migrated historical sessions do not approve new live checkpoints.
-- New quizzes and retests use the concise, changes-only question policy; existing saved questions and answers remain in history. New answer evaluations and challenges use the more forgiving main-idea grading policy. To try a fresh assessment, restart the demo PR or submit a new PR revision.
+- New quizzes and retests use the program-structure policy; existing saved questions, answers and completed checkpoints remain in history. New evaluations, followups and teaching focus on high-level understanding. To try a fresh assessment, restart the demo PR or submit a new PR revision.
 - Live Dartmouth checks with public demo code verified change-grounded, concise question generation, acceptance of brief correct explanations, and rejection of a material authorization mistake. Automated provider tests use mocks. Model IDs and access still depend on the Dartmouth account. The HTTP smoke test verifies the core demo workflow. Native Chrome UI verification was blocked by the computer-use runtime's URL safety check; frontend verification used lint, typecheck, production build and an HTTP page check.
