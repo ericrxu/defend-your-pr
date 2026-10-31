@@ -31,8 +31,8 @@ def analysis(data):
 
 
 PROMPTS = {
-    'Authorization boundary': ('Trace a signed-in non-owner reading a private document. What does can_read return, and what should a safe policy check?', 'A non-owner requests tags from a private document. Explain how ownership and public visibility should govern the result.'),
-    'Stable tag deduplication': ('Explain the time and space cost of unique_tags. How would a set plus a list change performance and output order?', 'If every document adds a new tag, compare list membership with set membership and explain how to preserve first-seen order.'),
+    'Authorization boundary': ('Trace a signed-in non-owner reading a private document. What does can_read return, and what should a safe policy check?', 'Using the added authorization checks, can a signed-in user read a private document they do not own? Briefly explain.'),
+    'Stable tag deduplication': ('Explain the time and space cost of unique_tags. How would a set plus a list change performance and output order?', 'What does the new seen set do when the next tag has already been encountered?'),
     'Visibility before aggregation': ('Trace list_tags from user and documents to output. Why must authorization happen before collecting tags?', 'How could private tags leak through list_tags, and which component must enforce visibility before aggregation?'),
 }
 
@@ -44,13 +44,13 @@ def question(concept, id, parent=None, kind='original'):
 def grade(q, answer):
     words = answer.lower()
     groups = {
-        'Authorization boundary': [('owner', 'ownership'), ('private', 'public'), ('deny', 'false', 'reject', 'leak', 'unsafe')],
-        'Stable tag deduplication': [('set',), ('order', 'list'), ('o(t)', 'linear', 'o(n)', 'quadratic', 'o(t²)', 'o(n^2)', 'o(t^2)')],
+        'Authorization boundary': [('owner', 'ownership', 'owns', 'their own', 'belongs to'), ('private', 'public', 'shared'), ('deny', 'false', 'reject', 'leak', 'unsafe', 'only', 'blocked', 'cannot', "can't")],
+        'Stable tag deduplication': [('set', 'seen', 'duplicate'), ('order', 'list', 'skip', 'once', 'unique', 'already'), ('o(t)', 'linear', 'o(n)', 'quadratic', 'o(t²)', 'o(n^2)', 'o(t^2)', 'faster', 'quick', 'efficient')],
         'Visibility before aggregation': [('filter', 'visible', 'visibility'), ('auth', 'permission', 'can_read'), ('tag', 'aggregate')],
     }[q.concept]
     count = sum(any(w in words for w in group) for group in groups)
-    verdict = 'uncertain' if '?' in words and count == 0 else 'correct' if count == 3 else 'partially_correct' if count else 'incorrect'
-    return Evaluation(verdict=verdict, feedback=f'Demo rule-based feedback: matched {count} of 3 reasoning signals. Compare your reasoning with the cited code; keyword matching can be wrong.', knowledge_gap=None if verdict == 'correct' else q.concept, followup='Use the cited function to walk through one concrete input and its result.' if verdict == 'partially_correct' else None, evidence=q.evidence)
+    verdict = 'uncertain' if '?' in words and count == 0 else 'correct' if count >= 2 else 'partially_correct' if count else 'incorrect'
+    return Evaluation(verdict=verdict, feedback=f'Demo rule-based feedback: matched {count} of 3 reasoning signals; two signals are enough for the main idea. Compare your reasoning with the cited code; keyword matching can be wrong.', knowledge_gap=None if verdict == 'correct' else q.concept, followup='Briefly explain the main effect of this change using one concrete input.' if verdict == 'partially_correct' else None, evidence=q.evidence)
 
 
 def teach(concept):

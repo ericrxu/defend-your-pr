@@ -11,6 +11,35 @@ from fastapi import HTTPException, Request
 from fastapi.responses import RedirectResponse
 from .github import GitHub
 
+OAUTH_ERRORS = {
+    'incorrect_client_credentials': 'GitHub rejected the OAuth client credentials. Check GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET belong to the same OAuth App, then restart the backend.',
+    'redirect_uri_mismatch': 'GitHub rejected the callback URL. Set the OAuth App callback to OWNIT_API_URL/auth/github/callback and restart sign-in.',
+    'bad_verification_code': 'The GitHub sign-in code expired or was already used. Return to OwnIt and click Sign in with GitHub again; do not refresh the callback page.',
+    'unverified_user_email': 'Verify your primary email address in GitHub settings, then start sign-in again.',
+}
+
+
+def exchange_code(code, verifier, redirect_uri):
+    try:
+        response = httpx.post('https://github.com/login/oauth/access_token', headers={'Accept':'application/json'}, json={'client_id':os.getenv('GITHUB_CLIENT_ID'), 'client_secret':os.getenv('GITHUB_CLIENT_SECRET'), 'redirect_uri':redirect_uri, 'code':code, 'code_verifier':verifier}, timeout=30)
+    except httpx.RequestError:
+        raise HTTPException(502, 'OwnIt cannot reach GitHub to finish sign-in. Run the backend with outbound HTTPS access, then return to OwnIt and start sign-in again.') from None
+    try:
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPStatusError, ValueError):
+        raise HTTPException(502, 'GitHub returned an unsuccessful or invalid token response. Return to OwnIt and start sign-in again.') from None
+    if not isinstance(payload, dict):
+        raise HTTPException(502, 'GitHub returned an invalid token response. Start sign-in again.')
+    if payload.get('error'):
+        # Never expose provider error descriptions, credentials or access tokens.
+        message = OAUTH_ERRORS.get(payload['error'], 'GitHub rejected the sign-in exchange. Check the OAuth App configuration, then start sign-in again.')
+        raise HTTPException(502, message)
+    token = payload.get('access_token')
+    if not isinstance(token, str) or not token:
+        raise HTTPException(502, 'GitHub did not issue an access token. Check the OAuth App configuration, then start sign-in again.')
+    return token
+
 
 def attach_auth(app, store):
     def user(request):
@@ -56,17 +85,13 @@ def attach_auth(app, store):
         if not data or not code:
             raise HTTPException(401, 'GitHub sign-in expired or was declined. Start sign-in again.')
         github = None
+        token = exchange_code(code, data['verifier'], callback_url())
         try:
-            response = httpx.post('https://github.com/login/oauth/access_token', headers={'Accept':'application/json'}, json={'client_id':os.getenv('GITHUB_CLIENT_ID'), 'client_secret':os.getenv('GITHUB_CLIENT_SECRET'), 'redirect_uri':callback_url(), 'code':code, 'code_verifier':data['verifier']}, timeout=30)
-            response.raise_for_status()
-            token = response.json().get('access_token')
-            if not token:
-                raise ValueError('Missing access token')
             github = GitHub(token)
             account = github.get('/user')
             identity = {'id':int(account['id']), 'login':account['login']}
-        except (httpx.HTTPError, ValueError, KeyError):
-            raise HTTPException(502, 'GitHub identity verification failed. Try signing in again.') from None
+        except (httpx.HTTPError, HTTPException, ValueError, KeyError, TypeError):
+            raise HTTPException(502, 'GitHub issued a token, but OwnIt could not read your GitHub identity. Check outbound access to api.github.com, then start sign-in again.') from None
         finally:
             if github:
                 github.close()

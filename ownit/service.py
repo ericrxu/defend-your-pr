@@ -6,6 +6,7 @@ from .agents import analysis, testing, teaching
 from .github import GitHub, parse_url
 from .models import Review, Question, Report
 from .security import redact
+from .changes import assessment_context, touches
 
 
 def uid():
@@ -49,6 +50,17 @@ class Orchestrator:
     def context(self, r):
         return {'analysis': r.analysis.model_dump(), 'files': r.files, 'diff': r.diff}
 
+    def testing_context(self, r):
+        context, scope = assessment_context(r, self.context(r))
+        if scope is not None and not scope:
+            raise HTTPException(422, 'No assessable new or modified head lines were found in this diff. Questions cannot be generated about unrelated original code.')
+        return context, scope
+
+    def verify_question_scope(self, question, r, scope):
+        self.verify_evidence(question.evidence, r.files)
+        if scope is not None and (not question.evidence or not all(touches(ev, scope) for ev in question.evidence)):
+            raise HTTPException(502, 'A generated question referenced original or unchanged code instead of this PR\'s changes. Retry question generation.')
+
     def mutable(self, r):
         if r.status == 'completed':
             raise HTTPException(409, 'This review is completed. Start a new review to assess more changes.')
@@ -58,21 +70,23 @@ class Orchestrator:
         if r.questions:
             return r
         self.mutable(r)
-        qs = [demo.question(c, uid()) for c in r.analysis.learning_objectives] if r.demo else testing.questions(self.llm, self.context(r))
+        context, scope = self.testing_context(r)
+        objectives = [c for c in r.analysis.learning_objectives if scope is None or any(touches(ev, scope) for ev in c.evidence)]
+        qs = [demo.question(c, uid()) for c in objectives] if r.demo else testing.questions(self.llm, context)
         if r.demo and r.analysis.review_type == 'change':
             prompts = {
-                'Authorization boundary': 'This PR replaces a signed-in check with ownership and public-visibility checks in can_read. How does that change a non-owner reading a private document, and what regression test would verify it?',
-                'Stable tag deduplication': 'This PR adds a set alongside the output list in unique_tags. Why keep both, how does complexity change, and what assumption does the set introduce?',
-                'Visibility before aggregation': 'How do the can_read changes affect list_tags downstream? Trace filtering before tag aggregation and explain how you would check that private tags cannot leak.',
+                'Authorization boundary': 'This PR adds ownership and public-visibility checks in can_read. In plain language, what access do these new checks allow?',
+                'Stable tag deduplication': 'This PR adds the seen set in unique_tags. How does that addition help collect tags?',
+                'Visibility before aggregation': 'What effect does this PR\'s new access check have on which tags a caller can receive?',
             }
             for q in qs:
                 q.prompt = prompts[q.concept]
-        if len(r.analysis.learning_objectives) >= 3 and len(qs) < 3:
+        if not qs or (scope is None and len(qs) < min(3, len(objectives))):
             raise HTTPException(502, 'AI returned too few questions for the identified learning objectives. Retry.')
         if len({q.prompt for q in qs}) != len(qs) or len({q.concept for q in qs}) != len(qs):
             raise HTTPException(502, 'AI returned duplicate assessment concepts. Retry.')
         for q in qs:
-            self.verify_evidence(q.evidence, r.files)
+            self.verify_question_scope(q, r, scope)
             q.id, q.parent_id, q.kind = uid(), None, 'original'
         r.questions, r.status = qs, 'testing'
         self.store.save(r)
@@ -93,7 +107,8 @@ class Orchestrator:
             raise HTTPException(409, 'Attempt the question before challenging its evaluation.')
         if previous and not request.challenge:
             raise HTTPException(409, 'Question already answered. Challenge the evaluation or request a retest.')
-        result = demo.grade(q, request.answer) if r.demo else testing.evaluate(self.llm, {**self.context(r), 'question': q.model_dump(), 'answer': redact(request.answer), 'challenge': request.challenge, 'previous_evaluations': previous})
+        context, _ = self.testing_context(r)
+        result = demo.grade(q, request.answer) if r.demo else testing.evaluate(self.llm, {**context, 'question': q.model_dump(), 'answer': redact(request.answer), 'challenge': request.challenge, 'previous_evaluations': previous})
         self.verify_evidence(result.evidence, r.files)
         r.answers.append({'id': uid(), 'question_id': q.id, 'answer': redact(request.answer), 'evaluation': result.model_dump(), 'challenge': request.challenge})
         if result.verdict == 'partially_correct' and result.followup and not any(item.kind == 'followup' and item.parent_id == q.id for item in r.questions):
@@ -124,6 +139,9 @@ class Orchestrator:
         r = self.get(id)
         self.mutable(r)
         original = self.question(r, request.question_id)
+        context, scope = self.testing_context(r)
+        if scope is not None and not any(touches(ev, scope) for ev in original.evidence):
+            raise HTTPException(409, 'This saved question concerns unchanged code. A fresh PR checkpoint will use the new changes-only question policy.')
         root = original
         while root.parent_id:
             root = self.question(r, root.parent_id)
@@ -143,14 +161,14 @@ class Orchestrator:
                 scenarios = {'Authorization boundary':'Compare an anonymous caller and an authenticated non-owner requesting a public document.', 'Stable tag deduplication':'Consider empty documents, all unique tags, and a non-hashable tag.', 'Visibility before aggregation':'Consider a mixture of public documents and another user\'s private documents sharing the same tag.'}
                 q.prompt = f"Retest {len(retests)+1}: {scenarios[q.concept]} {q.prompt}"
         else:
-            qs = testing.questions(self.llm, {**self.context(r), 'retest_concept': original.concept, 'previous_questions': [q.model_dump() for q in r.questions], 'answers': r.answers, 'teaching': r.conversations[-6:]})
+            qs = testing.questions(self.llm, {**context, 'retest_concept': original.concept, 'previous_questions': [q.model_dump() for q in r.questions], 'answers': r.answers, 'teaching': r.conversations[-6:]})
             if len(qs) != 1:
                 raise HTTPException(502, 'Retest must contain exactly one question. Retry.')
             q = qs[0]
             q.id, q.parent_id, q.kind, q.concept = uid(), root_id, 'retest', original.concept
         if q.prompt in {q.prompt for q in r.questions}:
             raise HTTPException(502, 'Retest repeated an existing question. Retry.')
-        self.verify_evidence(q.evidence, r.files)
+        self.verify_question_scope(q, r, scope)
         r.questions.append(q)
         r.status = 'testing'
         self.store.save(r)

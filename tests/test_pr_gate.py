@@ -27,6 +27,8 @@ class Model:
             return a
         if schema == QuestionSet:
             concepts = a.learning_objectives
+            allowed = {c['name'] for c in context['analysis']['learning_objectives']}
+            concepts = [c for c in concepts if c.name in allowed]
             if context.get('retest_concept'):
                 concepts = [c for c in concepts if c.name == context['retest_concept']]
             return QuestionSet(questions=[demo.question(c, str(i), kind='retest' if context.get('retest_concept') else 'original') for i,c in enumerate(concepts)])
